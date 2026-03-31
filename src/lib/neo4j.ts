@@ -105,6 +105,51 @@ export async function linkUserInterests(
   }
 }
 
+// ── Comments ────────────────────────────────────────────────
+
+/**
+ * Store comments for a creator's most recent video.
+ * Creates Comment nodes and links them to the Creator via HAS_COMMENT.
+ */
+export async function upsertComments(
+  channelId: string,
+  videoId: string,
+  comments: string[],
+): Promise<void> {
+  const s = session();
+  try {
+    // Delete old comments for this creator before inserting fresh ones
+    await s.run(
+      `MATCH (cr:Creator {channelId: $channelId})-[r:HAS_COMMENT]->(c:Comment)
+       DETACH DELETE c`,
+      { channelId },
+    );
+
+    for (let i = 0; i < comments.length; i++) {
+      const text = comments[i];
+      if (!text.trim()) continue;
+      await s.run(
+        `MATCH (cr:Creator {channelId: $channelId})
+         CREATE (c:Comment {
+           videoId: $videoId,
+           text: $text,
+           index: $idx,
+           createdAt: datetime()
+         })
+         CREATE (cr)-[:HAS_COMMENT]->(c)`,
+        {
+          channelId,
+          videoId,
+          text,
+          idx: neo4j.int(i),
+        },
+      );
+    }
+  } finally {
+    await s.close();
+  }
+}
+
 // ── Similarity edges ────────────────────────────────────────
 
 export async function computeSimilarCreators(
@@ -206,6 +251,72 @@ export async function getSimilarCreatorIds(
       { channelId, limit: neo4j.int(limit) },
     );
     return res.records.map((r) => r.get("id") as string);
+  } finally {
+    await s.close();
+  }
+}
+
+// ── Query creators by interests (for pipeline) ─────────────
+
+export interface Neo4jCreatorResult {
+  channelId: string;
+  name: string;
+  subscribers: number;
+  avgViews: number;
+  engagementRate: number;
+  thumbnailUrl: string;
+  topics: string[];
+  similarCreators: string[];
+  comments: string[];
+}
+
+/**
+ * Query Neo4j for creators matching the given interests.
+ * Returns up to `limit` creators with their topics, similar creators, and comments.
+ */
+export async function queryCreatorsByInterests(
+  interests: string[],
+  limit = 20,
+): Promise<Neo4jCreatorResult[]> {
+  const s = session();
+  try {
+    const lowerInterests = interests.map((i) => i.toLowerCase());
+    const res = await s.run(
+      `MATCH (c:Creator)-[:CREATES]->(t:Topic)
+       WHERE toLower(t.name) IN $interests
+       WITH c, COLLECT(DISTINCT t.name) AS topics
+       OPTIONAL MATCH (c)-[:SIMILAR_TO]-(similar:Creator)
+       WITH c, topics, COLLECT(DISTINCT similar.channelId) AS similarCreators
+       OPTIONAL MATCH (c)-[:HAS_COMMENT]->(comment:Comment)
+       WITH c, topics, similarCreators, COLLECT(comment.text)[0..10] AS comments
+       RETURN c.channelId AS channelId,
+              c.name AS name,
+              c.subscribers AS subscribers,
+              c.avgViews AS avgViews,
+              c.engagementRate AS engagementRate,
+              c.thumbnailUrl AS thumbnailUrl,
+              topics, similarCreators, comments
+       ORDER BY c.subscribers DESC
+       LIMIT $limit`,
+      { interests: lowerInterests, limit: neo4j.int(limit) },
+    );
+
+    return res.records.map((r) => {
+      const subs = r.get("subscribers");
+      const views = r.get("avgViews");
+      const er = r.get("engagementRate");
+      return {
+        channelId: r.get("channelId") ?? "",
+        name: r.get("name") ?? "Unknown",
+        subscribers: typeof subs?.toNumber === "function" ? subs.toNumber() : Number(subs ?? 0),
+        avgViews: typeof views?.toNumber === "function" ? views.toNumber() : Number(views ?? 0),
+        engagementRate: typeof er?.toNumber === "function" ? er.toNumber() : Number(er ?? 0),
+        thumbnailUrl: r.get("thumbnailUrl") ?? "",
+        topics: r.get("topics") ?? [],
+        similarCreators: r.get("similarCreators") ?? [],
+        comments: r.get("comments") ?? [],
+      };
+    });
   } finally {
     await s.close();
   }
