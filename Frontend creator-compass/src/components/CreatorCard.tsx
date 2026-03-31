@@ -44,7 +44,9 @@ export function CreatorCard({ creator, index }: CreatorCardProps) {
             <h3 className="font-display text-lg font-semibold text-foreground">
               {creator.name}
             </h3>
-            <p className="text-xs text-muted-foreground">{creator.consistency} uploads</p>
+            {creator.consistency && (
+              <p className="text-xs text-muted-foreground">{creator.consistency} uploads</p>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1.5">

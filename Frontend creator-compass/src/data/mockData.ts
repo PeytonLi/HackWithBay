@@ -94,12 +94,13 @@ export const MOCK_CREATORS: Creator[] = [
   },
 ];
 
+/** Step IDs must match backend pipeline step IDs */
 export const AGENT_STEPS = [
   { id: "query", label: "Planning search queries", icon: "🧠" },
   { id: "discovery", label: "Searching YouTube", icon: "🔍" },
   { id: "enrichment", label: "Enriching creator profiles", icon: "📊" },
   { id: "analysis", label: "Analyzing engagement signals", icon: "🔬" },
-  { id: "scoring", label: "Computing authenticity scores", icon: "⭐" },
+  { id: "graph", label: "Building creator graph", icon: "🧩" },
   { id: "ranking", label: "Ranking creators", icon: "🏆" },
   { id: "explain", label: "Generating explanations", icon: "✨" },
 ];

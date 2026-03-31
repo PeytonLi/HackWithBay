@@ -1,16 +1,41 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, MapPin, Sparkles, ArrowLeft, Zap } from "lucide-react";
 import { InterestChips } from "@/components/InterestChips";
 import { AgentPipeline } from "@/components/AgentPipeline";
 import { CreatorCard } from "@/components/CreatorCard";
-import { MOCK_CREATORS, AGENT_STEPS } from "@/data/mockData";
-import { AgentStep, Creator, SearchParams } from "@/types/creator";
+import { AGENT_STEPS } from "@/data/mockData";
+import { AgentStep, Creator, SearchParams, BackendCreator, BackendStep } from "@/types/creator";
 
-type AppPhase = "input" | "loading" | "results";
+type AppPhase = "input" | "loading" | "results" | "error";
+
+/** Map backend snake_case creator to frontend camelCase */
+function mapCreator(c: BackendCreator): Creator {
+  return {
+    name: c.name,
+    channelId: c.channelId,
+    thumbnailUrl: c.thumbnailUrl ?? "",
+    channelUrl: c.channelUrl,
+    subscribers: c.subscribers,
+    avgViews: c.avg_views,
+    engagementRate: c.engagement_rate,
+    score: c.score > 1 ? c.score / 100 : c.score, // normalise to 0-1 if needed
+    tags: c.tags,
+    reason: c.reason,
+  };
+}
+
+/** Map backend step status to frontend step status */
+function mapStepStatus(s: BackendStep["status"]): AgentStep["status"] {
+  if (s === "running") return "active";
+  if (s === "complete") return "done";
+  if (s === "error") return "done";
+  return "pending";
+}
 
 const Index = () => {
   const [phase, setPhase] = useState<AppPhase>("input");
+  const [errorMsg, setErrorMsg] = useState("");
   const [params, setParams] = useState<SearchParams>({
     interests: [],
     location: "",
@@ -24,29 +49,73 @@ const Index = () => {
 
   const runPipeline = useCallback(async () => {
     setPhase("loading");
-    const stepsCopy = AGENT_STEPS.map((s) => ({ ...s, status: "pending" as const }));
-    setSteps(stepsCopy);
+    setErrorMsg("");
+    setResults([]);
+    setSteps(AGENT_STEPS.map((s) => ({ ...s, status: "pending" as const })));
 
-    for (let i = 0; i < stepsCopy.length; i++) {
-      setSteps((prev) =>
-        prev.map((s, idx) => ({
-          ...s,
-          status: idx === i ? "active" : idx < i ? "done" : "pending",
-        }))
-      );
-      await new Promise((r) => setTimeout(r, 800 + Math.random() * 600));
+    try {
+      const res = await fetch("/api/find-creators/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          interests: params.interests,
+          location: params.location,
+          preferAuthentic: params.preferAuthentic,
+          preferDeepContent: params.preferDeep,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let currentEvent = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+
+            if (currentEvent === "step") {
+              const backendStep = data as BackendStep;
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === backendStep.id
+                    ? { ...s, status: mapStepStatus(backendStep.status) }
+                    : s
+                )
+              );
+            } else if (currentEvent === "result") {
+              const creators = (data.creators as BackendCreator[]).map(mapCreator);
+              setResults(creators);
+            } else if (currentEvent === "done") {
+              setSteps((prev) => prev.map((s) => ({ ...s, status: "done" as const })));
+            } else if (currentEvent === "error") {
+              throw new Error(data.message || "Pipeline failed");
+            }
+          }
+        }
+      }
+
+      setPhase("results");
+    } catch (err) {
+      console.error("Pipeline error:", err);
+      setErrorMsg(err instanceof Error ? err.message : "Something went wrong");
+      setPhase("error");
     }
-
-    setSteps((prev) => prev.map((s) => ({ ...s, status: "done" as const })));
-    await new Promise((r) => setTimeout(r, 500));
-
-    // Filter/sort mock data based on preferences
-    let filtered = [...MOCK_CREATORS];
-    if (params.preferAuthentic) {
-      filtered.sort((a, b) => b.engagementRate - a.engagementRate);
-    }
-    setResults(filtered);
-    setPhase("results");
   }, [params]);
 
   const canSearch = params.interests.length > 0 && params.location.trim().length > 0;
@@ -209,6 +278,27 @@ const Index = () => {
                 {results.map((creator, i) => (
                   <CreatorCard key={creator.channelId} creator={creator} index={i} />
                 ))}
+              </div>
+            </motion.div>
+          )}
+
+          {/* ERROR PHASE */}
+          {phase === "error" && (
+            <motion.div
+              key="error"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mx-auto max-w-lg text-center"
+            >
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-8">
+                <p className="text-lg font-semibold text-destructive mb-2">Something went wrong</p>
+                <p className="text-sm text-muted-foreground mb-4">{errorMsg}</p>
+                <button
+                  onClick={() => setPhase("input")}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                >
+                  Try Again
+                </button>
               </div>
             </motion.div>
           )}
