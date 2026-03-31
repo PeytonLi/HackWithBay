@@ -19,6 +19,10 @@ node_modules/
 *.pem
 npm-debug.log*
 
+# debug / temp files
+*.txt
+!README.txt
+
 # MCP config (contains credentials)
 .vscode/mcp.json
 

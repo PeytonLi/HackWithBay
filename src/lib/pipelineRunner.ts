@@ -76,8 +76,8 @@ export async function runCreatorPipeline(
     const response = await client.send(
       token,
       payload,
-      { filename: "creators.json" },
-      "application/json",
+      {},
+      "text/plain",
       async (type: string, data: Record<string, unknown>) => {
         onStep?.({
           id: String(data.pipeId ?? "agent"),
@@ -114,26 +114,47 @@ function parseAgentResponse(response: unknown, interests: string[]): Creator[] {
   try {
     let data: any = response;
 
-    // If response is a string, try to extract JSON from it
+    // Unwrap nested RocketRide response structures
+    // response_answers returns: { answers: ["markdown report", "```json {...}```"] }
+    if (data?.answers) data = data.answers;
+    if (Array.isArray(data)) {
+      // Find the answer that contains our JSON (ranked_creators/creators)
+      // The LLM may return multiple answers — pick the one with parseable JSON
+      const jsonAnswer = data.find(
+        (item: unknown) => typeof item === "string" && /("ranked_creators"|"creators")/.test(item),
+      );
+      data = jsonAnswer ?? data[data.length - 1] ?? data[0];
+    }
+
+    // Walk into any remaining wrapper objects looking for the LLM text
+    // RocketRide may nest further: { content: "..." }, { text: "..." }, { message: "..." }
+    for (const key of ["content", "text", "message", "result"]) {
+      if (typeof data === "object" && data !== null && typeof data[key] === "string") {
+        data = data[key];
+        break;
+      }
+    }
+
+    // If data is a string, extract JSON containing ranked_creators or creators
     if (typeof data === "string") {
-      const jsonMatch = data.match(/\{[\s\S]*("ranked_creators"|"creators")[\s\S]*\}/);
+      // Strip markdown code fences the LLM may wrap around JSON
+      const stripped = data.replace(/```json\s*/g, "").replace(/```\s*/g, "");
+      const jsonMatch = stripped.match(/\{[\s\S]*("ranked_creators"|"creators")[\s\S]*\}/);
       if (jsonMatch) {
         data = JSON.parse(jsonMatch[0]);
       } else {
-        console.warn("Could not parse agent response as JSON, returning empty");
+        console.warn("[parseAgentResponse] No JSON with ranked_creators/creators found in:", data.slice(0, 500));
         return [];
       }
     }
 
-    // Handle nested response structures from RocketRide
-    if (data?.answers) data = data.answers;
-    if (Array.isArray(data) && data.length > 0) data = data[0];
-    if (typeof data === "string") {
-      const jsonMatch = data.match(/\{[\s\S]*("ranked_creators"|"creators")[\s\S]*\}/);
-      if (jsonMatch) data = JSON.parse(jsonMatch[0]);
+    // data should now be the parsed object with ranked_creators or creators
+    const rawCreators = data?.ranked_creators || data?.creators || [];
+    if (!Array.isArray(rawCreators) || rawCreators.length === 0) {
+      console.warn("[parseAgentResponse] No creators array found. Keys:", Object.keys(data ?? {}));
+      return [];
     }
 
-    const rawCreators = data?.ranked_creators || data?.creators || [];
     return rawCreators.map((c: any) => ({
       name: c.name || "Unknown",
       channelId: c.channelId || "",
@@ -147,7 +168,7 @@ function parseAgentResponse(response: unknown, interests: string[]): Creator[] {
       channelUrl: c.channelUrl || (c.channelId ? `https://youtube.com/channel/${c.channelId}` : ""),
     }));
   } catch (err) {
-    console.error("Failed to parse agent response:", err);
+    console.error("[parseAgentResponse] Failed to parse:", err);
     return [];
   }
 }
