@@ -1,0 +1,210 @@
+{
+  "project_id": "63f70644-3c7c-490f-adb2-c56abaf8c164",
+  "components": [
+    {
+      "id": "webhook_1",
+      "provider": "webhook",
+      "name": "First Query",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "webhook"
+      },
+      "ui": {
+        "position": {
+          "x": 478.44380490528863,
+          "y": 417.74205950219607
+        },
+        "measured": {
+          "width": 150,
+          "height": 200
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "chat_1",
+      "provider": "chat",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "chat"
+      },
+      "ui": {
+        "position": {
+          "x": 470.0200142540043,
+          "y": 272.5159041839856
+        },
+        "measured": {
+          "width": 150,
+          "height": 89
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "prompt_1",
+      "provider": "prompt",
+      "name": "TakeUserInput",
+      "config": {
+        "instructions": [
+          "   You are an AI agent that evaluates and ranks content creators based on trust, authenticity, and audience quality.  You will receive a list of creators with: - name - subscribers - topic - comments (array of comment texts) - optional: engagement_rate  ---  ## GOAL  Return a ranked list of creators who are most trustworthy and valuable for users to follow.  Focus on: - quality of engagement (not just quantity) - authenticity of audience - relevance to topic  ---  ## STEP 1: Analyze Comments  For each creator, classify comments into:  - Deep → thoughtful, experience-based, specific feedback - Question → users asking for help or clarification - Shallow → generic praise (e.g. “nice”, “great video”) - Spam → emojis, bots, irrelevant  Count number of comments in each category.  ---  ## STEP 2: Compute Comment Quality Score  Use this formula:  comment_quality_score = (2 × deep) + (1.5 × question) - (1 × shallow) - (2 × spam)  Normalize score if needed.  ---  ## STEP 3: Combine with Creator Signals  If available, include: - engagement_rate - subscriber_count  Compute final score:  final_score = 0.5 × comment_quality_score + 0.3 × engagement_rate + 0.2 × log(subscribers)  ---  ## STEP 4: Rank Creators  - Rank creators by final_score (highest first) - Identify:   - “High Trust Creators”   - “Hidden Gems” (low subscribers but high quality score)  ---  ## STEP 5: Generate Explanation  For each top creator, provide a short explanation:  Explain based on: - type of audience engagement - consistency or depth of comments - why they are trustworthy  ---  ## OUTPUT FORMAT (STRICT JSON)  {   \"ranked_creators\": [     {       \"name\": \"Creator B\",       \"final_score\": 8.7,       \"comment_breakdown\": {         \"deep\": 5,         \"question\": 3,         \"shallow\": 1,         \"spam\": 0       },       \"label\": \"Hidden Gem\",       \"reason\": \"This creator generates meaningful discussions and questions, indicating strong audience trust despite a smaller subscriber base.\"     }   ] }  ---  ## CONSTRAINTS  - Do NOT hallucinate data - Base reasoning ONLY on provided inputs - Keep explanations concise (1–2 lines) - Always return valid JSON"
+        ],
+        "parameters": {
+          "google": {}
+        }
+      },
+      "ui": {
+        "position": {
+          "x": 669.4676613679734,
+          "y": 455.62474862153385
+        },
+        "measured": {
+          "width": 150,
+          "height": 140
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "text",
+          "from": "webhook_1"
+        }
+      ]
+    },
+    {
+      "id": "agent_rocketride_1",
+      "provider": "agent_rocketride",
+      "config": {
+        "agent_description": "",
+        "instructions": [],
+        "max_waves": 10
+      },
+      "ui": {
+        "position": {
+          "x": 865.6422093987277,
+          "y": 328.3289962905323
+        },
+        "measured": {
+          "width": 150,
+          "height": 86
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "webhook_2",
+      "provider": "webhook",
+      "name": "Second Query",
+      "config": {
+        "hideForm": true,
+        "mode": "Source",
+        "parameters": {},
+        "type": "webhook"
+      },
+      "ui": {
+        "position": {
+          "x": 491.5022467496987,
+          "y": 647.1096966718194
+        },
+        "measured": {
+          "width": 150,
+          "height": 136
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "tool_http_request_1",
+      "provider": "tool_http_request",
+      "config": {
+        "allowDELETE": true,
+        "allowGET": true,
+        "allowHEAD": false,
+        "allowOPTIONS": false,
+        "allowPATCH": true,
+        "allowPOST": true,
+        "allowPUT": true,
+        "type": "tool_http_request",
+        "urlWhitelist": []
+      },
+      "ui": {
+        "position": {
+          "x": 685.7891938850817,
+          "y": 741.8959181866104
+        },
+        "measured": {
+          "width": 150,
+          "height": 40
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "response_answers_1",
+      "provider": "response_answers",
+      "config": {
+        "laneName": "answers"
+      },
+      "ui": {
+        "position": {
+          "x": 1056.4412449248975,
+          "y": 485.6362387614423
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      }
+    },
+    {
+      "id": "llm_anthropic_1",
+      "provider": "llm_anthropic",
+      "config": {
+        "profile": "claude-sonnet-4-6",
+        "claude-sonnet-4-6": {
+          "apikey": "${ANTHROPIC_API_KEY}"
+        },
+        "parameters": {
+          "google": {}
+        }
+      },
+      "ui": {
+        "position": {
+          "x": 873.83694762673,
+          "y": 489.83103332844456
+        },
+        "measured": {
+          "width": 150,
+          "height": 66
+        },
+        "nodeType": "default",
+        "formDataValid": true
+      },
+      "input": [
+        {
+          "lane": "questions",
+          "from": "prompt_1"
+        }
+      ]
+    }
+  ],
+  "viewport": {
+    "x": -492.5865068016959,
+    "y": -190.38041919996022,
+    "zoom": 0.9766994070416399
+  },
+  "version": 1,
+  "docRevision": 77,
+  "source": "webhook_1"
+}

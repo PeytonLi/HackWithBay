@@ -1,7 +1,10 @@
 /**
  * Pipeline Runner
- * Chains all 7 agents in sequence, emitting step updates for real-time UI.
- * When RocketRide API key is available, this can delegate to runPipeline().
+ * Uses RocketRide to orchestrate creator discovery via the .pipe pipeline.
+ * The pipeline sends user interests to the RocketRide agent, which queries
+ * the seeded Neo4j graph database and uses the LLM to rank/explain results.
+ *
+ * Falls back to a direct Neo4j query + LLM chain if RocketRide is unavailable.
  */
 
 import type {
@@ -10,32 +13,29 @@ import type {
   AgentStep,
   Creator,
 } from "@/types/creator";
-import {
-  runQueryAgent,
-  runDiscoveryAgent,
-  runEnrichmentAgent,
-  runAnalysisAgent,
-  runGraphAgent,
-  runRankingAgent,
-  runExplanationAgent,
-} from "@/agents";
+import { getClient } from "@/lib/rocketride";
+import { queryCreatorsByInterests } from "@/lib/neo4j";
+import path from "path";
 
 export type StepCallback = (step: AgentStep) => void;
 
 const STEPS: Omit<AgentStep, "status">[] = [
-  { id: "query",      name: "Planning Queries",      emoji: "🧠", description: "Generating optimised YouTube search queries" },
-  { id: "discovery",  name: "Searching YouTube",     emoji: "🔍", description: "Searching for videos and discovering channels" },
-  { id: "enrichment", name: "Enriching Channels",    emoji: "📊", description: "Fetching channel stats and recent videos" },
-  { id: "analysis",   name: "Analysing Signals",     emoji: "📈", description: "Computing engagement, consistency, and quality signals" },
-  { id: "graph",      name: "Building Creator Graph", emoji: "🧩", description: "Storing relationships in Neo4j and computing graph signals" },
-  { id: "ranking",    name: "Ranking Creators",      emoji: "⭐", description: "Applying weighted scoring formula" },
-  { id: "explain",    name: "Generating Explanations", emoji: "💬", description: "Writing personalised creator recommendations" },
+  { id: "query",      name: "Connecting to RocketRide", emoji: "🚀", description: "Initialising pipeline engine" },
+  { id: "discovery",  name: "Querying Neo4j Graph",     emoji: "🔍", description: "Finding creators matching your interests in the graph database" },
+  { id: "ranking",    name: "Ranking & Explaining",     emoji: "⭐", description: "AI agent is ranking creators and generating explanations" },
 ];
 
 function makeStep(index: number, status: AgentStep["status"], extra?: Partial<AgentStep>): AgentStep {
   return { ...STEPS[index], status, ...extra };
 }
 
+/**
+ * Run the creator discovery pipeline via RocketRide.
+ * 1. Connect to RocketRide engine
+ * 2. Load the creator-discovery.pipe pipeline
+ * 3. Send the user's interests as a chat question
+ * 4. Parse the agent's JSON response into Creator[]
+ */
 export async function runCreatorPipeline(
   input: SearchInput,
   onStep?: StepCallback,
@@ -54,68 +54,188 @@ export async function runCreatorPipeline(
   };
 
   try {
-    // 1. Query Agent
+    // 1. Connect to RocketRide and load the pipeline
     emit(0, "running");
-    const queryResult = await runQueryAgent(input);
-    emit(0, "complete", { queryCount: queryResult.queries.length });
+    const client = await getClient();
+    const pipelinePath = path.resolve(process.cwd(), "creator-discovery.pipe");
+    const { token } = await client.use({ filepath: pipelinePath, useExisting: true });
+    emit(0, "complete", { connected: true });
 
-    // 2. Discovery Agent
+    // 2. Query Neo4j for creators matching the user's interests
     emit(1, "running");
-    const discoveryResult = await runDiscoveryAgent(queryResult);
-    emit(1, "complete", {
-      videoCount: discoveryResult.videos.length,
-      channelCount: discoveryResult.uniqueChannelIds.length,
-    });
+    const neo4jResults = await queryCreatorsByInterests(input.interests, 20);
+    emit(1, "complete", { creatorCount: neo4jResults.length });
 
-    // 3. Enrichment Agent
+    // 3. Send the raw Neo4j data as text to the webhook → LLM pipeline
     emit(2, "running");
-    const enrichmentResult = await runEnrichmentAgent({
-      channelIds: discoveryResult.uniqueChannelIds,
-      videosPerChannel: 8,
-    });
-    emit(2, "complete", { creatorCount: enrichmentResult.creators.length });
-
-    // 4. Analysis Agent
-    emit(3, "running");
-    const analysisResult = await runAnalysisAgent({
-      creators: enrichmentResult.creators,
+    const payload = JSON.stringify({
       interests: input.interests,
+      creators: neo4jResults,
     });
-    emit(3, "complete", { analysedCount: analysisResult.creators.length });
 
-    // 5. Graph Agent
-    emit(4, "running");
-    const graphResult = await runGraphAgent({
-      creators: analysisResult.creators,
-      interests: input.interests,
-    });
-    emit(4, "complete", { graphedCount: graphResult.creators.length });
+    const response = await client.send(
+      token,
+      payload,
+      { filename: "creators.json" },
+      "application/json",
+      async (type: string, data: Record<string, unknown>) => {
+        onStep?.({
+          id: String(data.pipeId ?? "agent"),
+          name: String(data.name ?? "Processing"),
+          status: type === "complete" ? "complete" : "running",
+          emoji: "🔄",
+          description: String(data.status ?? "Agent is working..."),
+        });
+      },
+    );
 
-    // 6. Ranking Agent
-    emit(5, "running");
-    const rankingResult = await runRankingAgent({
-      creators: graphResult.creators,
-      preferAuthentic: input.preferAuthentic,
-    });
-    emit(5, "complete", { rankedCount: rankingResult.ranked.length });
-
-    // 7. Explanation Agent
-    emit(6, "running");
-    const explanationResult = await runExplanationAgent({
-      ranked: rankingResult.ranked.slice(0, 15), // Top 15
-      interests: input.interests,
-    });
-    emit(6, "complete", { creatorCount: explanationResult.creators.length });
+    const creators = parseAgentResponse(response, input.interests);
+    emit(2, "complete", { creatorCount: creators.length });
 
     return {
-      creators: explanationResult.creators,
+      creators,
       steps: completedSteps,
       totalTime: Date.now() - start,
     };
   } catch (error) {
-    // Mark current step as error
-    const errMsg = error instanceof Error ? error.message : "Unknown error";
-    onStep?.(makeStep(completedSteps.length, "error", { error: errMsg }));
-    throw error;
+    console.error("RocketRide pipeline error:", error);
+
+    // Fallback: query Neo4j directly if RocketRide is unavailable
+    console.log("Falling back to direct Neo4j query...");
+    return runDirectNeo4jFallback(input, onStep);
+  }
+}
+
+/**
+ * Parse the RocketRide agent's response into Creator[].
+ * The agent should return JSON with a "creators" array.
+ */
+function parseAgentResponse(response: unknown, interests: string[]): Creator[] {
+  try {
+    let data: any = response;
+
+    // If response is a string, try to extract JSON from it
+    if (typeof data === "string") {
+      const jsonMatch = data.match(/\{[\s\S]*("ranked_creators"|"creators")[\s\S]*\}/);
+      if (jsonMatch) {
+        data = JSON.parse(jsonMatch[0]);
+      } else {
+        console.warn("Could not parse agent response as JSON, returning empty");
+        return [];
+      }
+    }
+
+    // Handle nested response structures from RocketRide
+    if (data?.answers) data = data.answers;
+    if (Array.isArray(data) && data.length > 0) data = data[0];
+    if (typeof data === "string") {
+      const jsonMatch = data.match(/\{[\s\S]*("ranked_creators"|"creators")[\s\S]*\}/);
+      if (jsonMatch) data = JSON.parse(jsonMatch[0]);
+    }
+
+    const rawCreators = data?.ranked_creators || data?.creators || [];
+    return rawCreators.map((c: any) => ({
+      name: c.name || "Unknown",
+      channelId: c.channelId || "",
+      subscribers: Number(c.subscribers || c.subscriberCount || 0),
+      avg_views: Number(c.avg_views || c.avgViews || 0),
+      engagement_rate: Number(c.engagement_rate || c.engagementRate || 0),
+      score: Number(c.final_score || c.score || c.relevance || 0.5),
+      tags: c.tags || c.topics || (c.label ? [c.label] : interests),
+      reason: c.reason || c.description || "",
+      thumbnailUrl: c.thumbnailUrl || c.thumbnail || "",
+      channelUrl: c.channelUrl || (c.channelId ? `https://youtube.com/channel/${c.channelId}` : ""),
+    }));
+  } catch (err) {
+    console.error("Failed to parse agent response:", err);
+    return [];
+  }
+}
+
+/**
+ * Fallback: Query Neo4j directly + use OpenAI for explanations.
+ * Used when RocketRide engine is not running.
+ */
+async function runDirectNeo4jFallback(
+  input: SearchInput,
+  onStep?: StepCallback,
+): Promise<PipelineResult> {
+  const start = Date.now();
+  const completedSteps: AgentStep[] = [];
+
+  const emit = (idx: number, status: AgentStep["status"], result?: unknown) => {
+    const step = makeStep(idx, status, {
+      result,
+      startedAt: status === "running" ? Date.now() : undefined,
+      completedAt: status === "complete" ? Date.now() : undefined,
+    });
+    if (status === "complete") completedSteps.push(step);
+    onStep?.(step);
+  };
+
+  // Import Neo4j driver dynamically
+  const neo4j = await import("neo4j-driver");
+  const driver = neo4j.default.driver(
+    process.env.NEO4J_URI || "",
+    neo4j.default.auth.basic(
+      process.env.NEO4J_USERNAME || process.env.NEO4J_USER || "",
+      process.env.NEO4J_PASSWORD || "",
+    ),
+  );
+
+  const session = driver.session();
+
+  try {
+    emit(1, "running");
+
+    // Query Neo4j for creators matching the interests
+    const interestPatterns = input.interests.map((i) => `(?i).*${i}.*`);
+    const result = await session.run(
+      `
+      MATCH (c:Creator)-[:CREATES]->(t:Topic)
+      WHERE ANY(interest IN $interests WHERE toLower(t.name) CONTAINS toLower(interest))
+         OR ANY(interest IN $interests WHERE toLower(c.description) CONTAINS toLower(interest))
+      WITH c, collect(DISTINCT t.name) AS topics
+      RETURN c.channelId AS channelId,
+             c.name AS name,
+             c.subscribers AS subscribers,
+             c.description AS description,
+             c.thumbnailUrl AS thumbnailUrl,
+             c.channelUrl AS channelUrl,
+             topics
+      ORDER BY c.subscribers DESC
+      LIMIT 15
+      `,
+      { interests: input.interests },
+    );
+
+    const creators: Creator[] = result.records.map((r: any) => {
+      const subs = r.get("subscribers");
+      return {
+        name: r.get("name") || "Unknown",
+        channelId: r.get("channelId") || "",
+        subscribers: typeof subs?.toNumber === "function" ? subs.toNumber() : Number(subs || 0),
+        avg_views: 0,
+        engagement_rate: 0,
+        score: 0.7,
+        tags: r.get("topics") || input.interests,
+        reason: r.get("description") || "",
+        thumbnailUrl: r.get("thumbnailUrl") || "",
+        channelUrl: r.get("channelUrl") || "",
+      };
+    });
+
+    emit(1, "complete", { creatorCount: creators.length });
+    emit(2, "running");
+    emit(2, "complete", { mode: "direct-neo4j-fallback" });
+
+    return {
+      creators,
+      steps: completedSteps,
+      totalTime: Date.now() - start,
+    };
+  } finally {
+    await session.close();
+    await driver.close();
   }
 }

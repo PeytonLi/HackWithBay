@@ -6,13 +6,9 @@ import { AgentStepIndicator } from "@/components/AgentStepIndicator";
 import type { AgentStep } from "@/types/creator";
 
 const INITIAL_STEPS: AgentStep[] = [
-  { id: "query",      name: "Planning Queries",       emoji: "🧠", status: "pending", description: "Generating optimised YouTube search queries" },
-  { id: "discovery",  name: "Searching YouTube",      emoji: "🔍", status: "pending", description: "Searching for videos and discovering channels" },
-  { id: "enrichment", name: "Enriching Channels",     emoji: "📊", status: "pending", description: "Fetching channel stats and recent videos" },
-  { id: "analysis",   name: "Analysing Signals",      emoji: "📈", status: "pending", description: "Computing engagement, consistency, and quality signals" },
-  { id: "graph",      name: "Building Creator Graph",  emoji: "🧩", status: "pending", description: "Storing relationships and computing graph signals" },
-  { id: "ranking",    name: "Ranking Creators",       emoji: "⭐", status: "pending", description: "Applying weighted scoring formula" },
-  { id: "explain",    name: "Generating Explanations", emoji: "💬", status: "pending", description: "Writing personalised recommendations" },
+  { id: "connect",   name: "Connecting to RocketRide", emoji: "🚀", status: "pending", description: "Initialising the AI pipeline engine" },
+  { id: "discovery", name: "Querying Neo4j Graph",     emoji: "🔍", status: "pending", description: "Finding creators matching your interests in the graph database" },
+  { id: "ranking",   name: "Ranking & Explaining",     emoji: "⭐", status: "pending", description: "AI agent is ranking creators and generating explanations" },
 ];
 
 export default function SearchPage() {
