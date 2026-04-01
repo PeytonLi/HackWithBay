@@ -40,6 +40,84 @@ function activeRuntimeLlmProvider(): "openai" | "anthropic" {
     : "openai";
 }
 
+function envFlag(name: string, defaultValue = false): boolean {
+  const raw = (process.env[name] ?? "").trim().toLowerCase();
+  if (!raw) return defaultValue;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+function connectionErrorDetails(error: unknown): string {
+  if (error == null) return "unknown";
+  if (typeof error === "string") return error;
+
+  const e = error as {
+    message?: string;
+    code?: string;
+    cause?: { message?: string; code?: string } | string;
+  };
+
+  const parts: string[] = [];
+  if (e.message) parts.push(e.message);
+  if (e.code) parts.push(`code=${e.code}`);
+  if (typeof e.cause === "string") {
+    parts.push(`cause=${e.cause}`);
+  } else if (e.cause) {
+    const cause = e.cause;
+    if (cause.message) parts.push(`cause=${cause.message}`);
+    if (cause.code) parts.push(`causeCode=${cause.code}`);
+  }
+
+  return parts.join("; ") || String(error);
+}
+
+function isLikelyNetworkConnectionIssue(error: unknown): boolean {
+  const text = connectionErrorDetails(error);
+  return /(connection error|fetch failed|econnrefused|enotfound|ehostunreach|timed?\s*out|timeout|tls|ssl|certificate|ERR_SSL|SEC_E_INVALID_TOKEN|packet length too long|openai\/_base_client\.py|_base_client\.py)/i.test(text);
+}
+
+async function detectBlockingLlmConnectivityIssue(): Promise<string | null> {
+  if (activeRuntimeLlmProvider() !== "openai") return null;
+  if (envFlag("ALLOW_LLM_DEGRADED", false)) return null;
+
+  const apiKey = (process.env.ROCKETRIDE_OPENAI_KEY || process.env.OPENAI_API_KEY || "").trim();
+  const baseUrl = (process.env.ROCKETRIDE_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || "").replace(/\/$/, "").trim();
+  if (!apiKey || !baseUrl) return null;
+
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+
+    if (response.ok) return null;
+
+    // Any HTTP status still proves network reachability. Avoid bypassing RocketRide.
+    return null;
+  } catch (error) {
+    if (!isLikelyNetworkConnectionIssue(error)) return null;
+
+    // Best-effort HTTP probe for known captive/intercept pages.
+    try {
+      const parsed = new URL(baseUrl);
+      const basePath = parsed.pathname.replace(/\/$/, "");
+      const probeUrl = `http://${parsed.host}${basePath}/models`;
+      const probe = await fetch(probeUrl, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(5_000),
+      });
+      const location = probe.headers.get("location") ?? "";
+      if (/t-mobile\.com\/home-internet\/http-warning/i.test(location)) {
+        return `network interception detected (${location})`;
+      }
+    } catch {
+      // Ignore probe errors; we'll still return the original network detail.
+    }
+
+    return connectionErrorDetails(error);
+  }
+}
+
 function applyRuntimeLlmToPipeline(pipeline: Record<string, any>): Record<string, any> {
   const provider = activeRuntimeLlmProvider();
   const components = Array.isArray(pipeline.components) ? pipeline.components : [];
@@ -70,19 +148,21 @@ function applyRuntimeLlmToPipeline(pipeline: Record<string, any>): Record<string
     return pipeline;
   }
 
-  const key = (process.env.ROCKETRIDE_OPENAI_KEY ?? process.env.OPENAI_API_KEY ?? "").trim();
-  const model = (process.env.ROCKETRIDE_OPENAI_MODEL ?? process.env.OPENAI_MODEL ?? "openai/gpt-5.4").trim();
+  const key = (process.env.ROCKETRIDE_OPENAI_KEY || process.env.OPENAI_API_KEY || "").trim();
+  const model = (process.env.ROCKETRIDE_OPENAI_MODEL || process.env.OPENAI_MODEL || "openai/gpt-5.4").trim();
+  const baseURL = (process.env.ROCKETRIDE_OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || "https://api.gmi-serving.com/v1").trim();
   if (!key) {
     throw new Error("LLM_PROVIDER=openai but ROCKETRIDE_OPENAI_KEY / OPENAI_API_KEY is not set");
   }
 
-  llmNode.provider = "llm_openai";
+  // Keep cloud-chat mode so gateway-issued tokens and custom OpenAI-compatible URLs work.
+  llmNode.provider = "llm_deepseek";
   llmNode.config = {
-    profile: "custom",
-    custom: {
+    profile: "cloud-chat",
+    "cloud-chat": {
       apikey: key,
+      serverbase: baseURL,
       model,
-      modelTotalTokens: Number(process.env.ROCKETRIDE_OPENAI_MODEL_TOKENS || 128000),
     },
     parameters: {},
   };
@@ -117,6 +197,31 @@ function toCreatorFallbackRow(
     thumbnailUrl: c.thumbnailUrl || "",
     channelUrl: c.channelId ? `https://youtube.com/channel/${c.channelId}` : "",
   };
+}
+
+function rankCreatorsDeterministically(
+  creators: Neo4jCreatorResult[],
+  interests: string[],
+  reason: string,
+): Creator[] {
+  return creators
+    .slice()
+    .sort((a, b) => {
+      const aScore = (Math.log10(Math.max(1, a.subscribers)) * 0.4) + (Math.min(1, a.engagementRate / 0.15) * 0.6);
+      const bScore = (Math.log10(Math.max(1, b.subscribers)) * 0.4) + (Math.min(1, b.engagementRate / 0.15) * 0.6);
+      return bScore - aScore;
+    })
+    .map((c) => {
+      const score = Math.max(
+        0,
+        Math.min(
+          1,
+          (Math.log10(Math.max(1, c.subscribers)) / 6) * 0.4 +
+          Math.min(1, c.engagementRate / 0.15) * 0.6,
+        ),
+      );
+      return toCreatorFallbackRow(c, interests, score, reason);
+    });
 }
 
 function completeRankedList(
@@ -185,64 +290,67 @@ async function rankCreatorsWithLLM(
 
   const cfg = getLLMConfig();
   if (!cfg.apiKey) {
-    return creators
-      .slice()
-      .sort((a, b) => b.subscribers - a.subscribers)
-      .map((c, idx) =>
-        toCreatorFallbackRow(
-          c,
-          interests,
-          Math.max(0, 1 - idx * 0.03),
-          "Ranked with deterministic fallback because LLM credentials are missing.",
-        ),
-      );
+    return rankCreatorsDeterministically(
+      creators,
+      interests,
+      "Ranked with deterministic fallback because LLM credentials are missing.",
+    );
   }
 
-  const ai = new OpenAI({ apiKey: cfg.apiKey, baseURL: cfg.baseURL });
-  const completion = await ai.chat.completions.create({
-    model: cfg.model,
-    temperature: 0.2,
-    max_completion_tokens: 2000,
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are ranking creators by trust and audience quality. Return strict JSON only. Include every creator from input exactly once in ranked order with a concise reason.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          interests,
-          creators,
-          output_schema: {
-            ranked_creators: [
-              {
-                name: "string",
-                channelId: "string",
-                final_score: "number 0-1",
-                label: "optional string",
-                reason: "1-2 sentence concise reason",
-              },
+  try {
+    const ai = new OpenAI({ apiKey: cfg.apiKey, baseURL: cfg.baseURL });
+    const completion = await ai.chat.completions.create({
+      model: cfg.model,
+      temperature: 0.2,
+      max_completion_tokens: 2000,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are ranking creators by trust and audience quality. Return strict JSON only. Include every creator from input exactly once in ranked order with a concise reason.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            interests,
+            creators,
+            output_schema: {
+              ranked_creators: [
+                {
+                  name: "string",
+                  channelId: "string",
+                  final_score: "number 0-1",
+                  label: "optional string",
+                  reason: "1-2 sentence concise reason",
+                },
+              ],
+            },
+            rules: [
+              "Use comment quality and relevance to interests as primary factors.",
+              "Do not drop any creator. Return all creators exactly once.",
             ],
-          },
-          rules: [
-            "Use comment quality and relevance to interests as primary factors.",
-            "Do not drop any creator. Return all creators exactly once.",
-          ],
-        }),
-      },
-    ],
-  });
+          }),
+        },
+      ],
+    });
 
-  const text = completion.choices[0]?.message?.content ?? "";
-  return completeRankedList(
-    parseAgentResponse(text, interests, {
-      expectedCount: creators.length,
-      source: "direct-llm-ranking",
-    }),
-    creators,
-    interests,
-  );
+    const text = completion.choices[0]?.message?.content ?? "";
+    return completeRankedList(
+      parseAgentResponse(text, interests, {
+        expectedCount: creators.length,
+        source: "direct-llm-ranking",
+      }),
+      creators,
+      interests,
+    );
+  } catch (error) {
+    console.warn("[rankCreatorsWithLLM] Falling back to deterministic ranking:", connectionErrorDetails(error));
+    return rankCreatorsDeterministically(
+      creators,
+      interests,
+      "Ranked with deterministic fallback because LLM connectivity failed.",
+    );
+  }
 }
 
 /**
@@ -275,6 +383,21 @@ export async function runCreatorPipeline(
     if (status === "complete") completedSteps.push(step);
     onStep?.(step);
   };
+
+  const preflightIssue = await detectBlockingLlmConnectivityIssue();
+  if (preflightIssue) {
+    console.warn("[runCreatorPipeline] Skipping RocketRide due to blocked LLM connectivity:", preflightIssue);
+    emit(0, "complete", {
+      skippedRocketRide: true,
+      reason: "blocked-llm-connectivity",
+      detail: preflightIssue,
+    });
+    return runDirectNeo4jFallback(normalizedInput, onStep, {
+      preferDeterministic: true,
+      mode: "direct-neo4j-preflight-fallback",
+      reason: "Ranked with deterministic fallback because the configured LLM endpoint is currently unreachable.",
+    });
+  }
 
   try {
     // 1. Connect to RocketRide and load the pipeline
@@ -364,7 +487,11 @@ export async function runCreatorPipeline(
 
     // Fallback: query Neo4j directly if RocketRide is unavailable
     console.log("Falling back to direct Neo4j query...");
-    return runDirectNeo4jFallback(normalizedInput, onStep);
+    return runDirectNeo4jFallback(normalizedInput, onStep, {
+      preferDeterministic: isLikelyNetworkConnectionIssue(error),
+      mode: "direct-neo4j-fallback",
+      reason: "Ranked with deterministic fallback because RocketRide could not reach the configured LLM endpoint.",
+    });
   }
 }
 
@@ -606,6 +733,7 @@ function parseAgentResponse(
 async function runDirectNeo4jFallback(
   input: SearchInput,
   onStep?: StepCallback,
+  options?: { preferDeterministic?: boolean; mode?: string; reason?: string },
 ): Promise<PipelineResult> {
   const start = Date.now();
   const completedSteps: AgentStep[] = [];
@@ -629,12 +757,34 @@ async function runDirectNeo4jFallback(
   emit(1, "complete", { creatorCount: neo4jResults.length });
   emit(2, "running");
 
-  const creators = await rankCreatorsWithLLM(
-    neo4jResults,
-    input.interests,
-  );
+  let creators: Creator[];
+  if (options?.preferDeterministic) {
+    creators = rankCreatorsDeterministically(
+      neo4jResults,
+      input.interests,
+      options.reason || "Ranked with deterministic fallback.",
+    );
+  } else {
+    try {
+      creators = await rankCreatorsWithLLM(
+        neo4jResults,
+        input.interests,
+      );
+    } catch (error) {
+      console.warn("[runDirectNeo4jFallback] LLM ranking failed, using deterministic ranking:", connectionErrorDetails(error));
+      creators = rankCreatorsDeterministically(
+        neo4jResults,
+        input.interests,
+        options?.reason || "Ranked with deterministic fallback because LLM ranking failed.",
+      );
+    }
+  }
 
-  emit(2, "complete", { mode: "direct-neo4j-fallback", creatorCount: creators.length });
+  emit(2, "complete", {
+    mode: options?.mode || "direct-neo4j-fallback",
+    creatorCount: creators.length,
+    deterministic: Boolean(options?.preferDeterministic),
+  });
 
   return {
     creators,

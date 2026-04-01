@@ -52,7 +52,9 @@ export async function upsertCreator(c: AnalyzedCreator): Promise<void> {
            cr.subscribers = $subs,
            cr.avgViews = $avgViews,
            cr.engagementRate = $er,
-           cr.thumbnailUrl = $thumb`,
+           cr.thumbnailUrl = $thumb,
+           cr.country = $country,
+           cr.description = $description`,
       {
         channelId: c.channelId,
         name: c.name,
@@ -60,6 +62,8 @@ export async function upsertCreator(c: AnalyzedCreator): Promise<void> {
         avgViews: c.engagement.avgViews,
         er: c.engagement.engagementRate,
         thumb: c.thumbnailUrl,
+        country: c.country ?? "",
+        description: c.description,
       },
     );
   } finally {
@@ -265,6 +269,8 @@ export interface Neo4jCreatorResult {
   avgViews: number;
   engagementRate: number;
   thumbnailUrl: string;
+  country: string;
+  locationMatch: boolean;
   topics: string[];
   similarCreators: string[];
   comments: string[];
@@ -281,30 +287,39 @@ export async function queryCreatorsByInterests(
   const s = session();
   try {
     const lowerInterests = interests.map((i) => i.toLowerCase());
-    const res = await s.run(
+
+    const query =
       `MATCH (c:Creator)-[:CREATES]->(t:Topic)
        WHERE toLower(t.name) IN $interests
        WITH c, COLLECT(DISTINCT t.name) AS topics
        OPTIONAL MATCH (c)-[:SIMILAR_TO]-(similar:Creator)
        WITH c, topics, COLLECT(DISTINCT similar.channelId) AS similarCreators
        OPTIONAL MATCH (c)-[:HAS_COMMENT]->(comment:Comment)
-       WITH c, topics, similarCreators, COLLECT(comment.text)[0..10] AS comments
+       WITH c, topics, similarCreators, COLLECT(comment.text)[0..20] AS comments
        RETURN c.channelId AS channelId,
               c.name AS name,
               c.subscribers AS subscribers,
               c.avgViews AS avgViews,
               c.engagementRate AS engagementRate,
               c.thumbnailUrl AS thumbnailUrl,
-              topics, similarCreators, comments
+              coalesce(c.country, '') AS country,
+              true AS locationMatch,
+              topics,
+              similarCreators,
+              comments
        ORDER BY c.subscribers DESC
-       LIMIT $limit`,
-      { interests: lowerInterests, limit: neo4j.int(limit) },
-    );
+       LIMIT $limit`;
+
+    const res = await s.run(query, {
+      interests: lowerInterests,
+      limit: neo4j.int(limit),
+    });
 
     return res.records.map((r) => {
       const subs = r.get("subscribers");
       const views = r.get("avgViews");
       const er = r.get("engagementRate");
+      const comments = (r.get("comments") ?? []) as unknown[];
       return {
         channelId: r.get("channelId") ?? "",
         name: r.get("name") ?? "Unknown",
@@ -312,9 +327,13 @@ export async function queryCreatorsByInterests(
         avgViews: typeof views?.toNumber === "function" ? views.toNumber() : Number(views ?? 0),
         engagementRate: typeof er?.toNumber === "function" ? er.toNumber() : Number(er ?? 0),
         thumbnailUrl: r.get("thumbnailUrl") ?? "",
+        country: r.get("country") ?? "",
+        locationMatch: Boolean(r.get("locationMatch")),
         topics: r.get("topics") ?? [],
         similarCreators: r.get("similarCreators") ?? [],
-        comments: r.get("comments") ?? [],
+        comments: comments
+          .map((c) => (typeof c === "string" ? c.trim() : ""))
+          .filter((c) => c.length > 0),
       };
     });
   } finally {

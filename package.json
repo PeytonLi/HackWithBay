@@ -8,7 +8,9 @@
     "dev:frontend": "npm --prefix \"Frontend creator-compass\" run dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:connectivity": "node scripts/verify-connectivity.mjs",
+    "test:pipeline:raw": "npx tsx scripts/test-pipeline-raw.mts"
   },
   "repository": {
     "type": "git",

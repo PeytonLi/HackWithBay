@@ -30,7 +30,6 @@ function model(): string {
 
 export async function generateSearchQueries(
   interests: string[],
-  location: string,
   preferDeep: boolean,
 ): Promise<string[]> {
   const ai = getOpenAI();
@@ -47,7 +46,6 @@ export async function generateSearchQueries(
       {
         role: "user",
         content: `Interests: ${interests.join(", ")}
-Location: ${location}
 Prefer ${preferDeep ? "long-form, in-depth" : "short, popular"} content.
 
 Generate YouTube search queries that would surface authentic, high-quality creators in these niches.`,

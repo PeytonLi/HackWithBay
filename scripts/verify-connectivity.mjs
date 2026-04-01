@@ -1,7 +1,8 @@
 import dotenv from "dotenv";
-dotenv.config({ path: ".env" });
+dotenv.config({ path: ".env", override: true });
 
 const results = {};
+const llmProvider = (process.env.LLM_PROVIDER || "openai").toLowerCase();
 
 // 1. YouTube Data API
 async function testYouTube() {
@@ -62,8 +63,37 @@ async function testRocketRide() {
   }
 }
 
-// 4. OpenAI-compatible LLM (GMI Cloud)
-async function testOpenAI() {
+// 4. LLM provider connectivity
+async function testLLM() {
+  if (llmProvider === "anthropic") {
+    const key = process.env.ROCKETRIDE_ANTHROPIC_KEY;
+    const baseUrl = process.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com/v1";
+    const model = process.env.ROCKETRIDE_ANTHROPIC_MODEL || "claude-haiku-4-5";
+    if (!key) return { status: "❌ SKIP", detail: "ROCKETRIDE_ANTHROPIC_KEY not set" };
+
+    try {
+      const res = await fetch(`${baseUrl}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model,
+          max_tokens: 16,
+          messages: [{ role: "user", content: "Say OK" }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) return { status: "❌ FAIL", detail: data.error.message || JSON.stringify(data.error) };
+      const reply = data.content?.find?.((c) => c.type === "text")?.text || "";
+      return { status: "✅ OK", detail: `Model ${model} responded: "${reply.trim()}"` };
+    } catch (e) {
+      return { status: "❌ FAIL", detail: e.message };
+    }
+  }
+
   const key = process.env.OPENAI_API_KEY;
   const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
   const model = process.env.OPENAI_MODEL || "gpt-4o";
@@ -97,13 +127,13 @@ const [yt, neo, rr, oai] = await Promise.all([
   testYouTube(),
   testNeo4j(),
   testRocketRide(),
-  testOpenAI(),
+  testLLM(),
 ]);
 
 console.log(`📺 YouTube Data API:   ${yt.status}  — ${yt.detail}`);
 console.log(`🧩 Neo4j:              ${neo.status}  — ${neo.detail}`);
 console.log(`🚀 RocketRide:         ${rr.status}  — ${rr.detail}`);
-console.log(`🤖 OpenAI:             ${oai.status}  — ${oai.detail}`);
+console.log(`🤖 LLM (${llmProvider}):      ${oai.status}  — ${oai.detail}`);
 
 const allOk = [yt, neo, rr, oai].every(r => r.status.includes("✅"));
 const critical = [yt, oai].every(r => r.status.includes("✅"));
