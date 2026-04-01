@@ -147,7 +147,10 @@ const Index = () => {
             <Zap className="h-3.5 w-3.5 text-primary" />
             <span className="text-xs font-medium text-primary">AI-Powered Creator Discovery</span>
           </div>
-          <h1 className="font-display text-4xl font-bold tracking-tight md:text-5xl">
+          <p className="mb-2 font-display text-3xl font-black uppercase tracking-[0.16em] text-primary md:text-4xl">
+            CreatorScope
+          </p>
+          <h1 className="font-display text-2xl font-bold tracking-tight md:text-3xl">
             <span className="text-gradient-primary">Find creators</span>
             <br />
             <span className="text-foreground">worth following</span>
