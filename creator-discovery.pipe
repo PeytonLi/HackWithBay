@@ -17,7 +17,7 @@
         },
         "measured": {
           "width": 150,
-          "height": 136
+          "height": 159
         },
         "nodeType": "default",
         "formDataValid": true
@@ -55,7 +55,7 @@
       "name": "TakeUserInput",
       "config": {
         "instructions": [
-          "   You are an AI agent that evaluates and ranks content creators based on trust, authenticity, and audience quality.  You will receive a list of creators with: - name - subscribers - topic - comments (array of comment texts) - optional: engagement_rate  ---  ## GOAL  Return a ranked list of creators who are most trustworthy and valuable for users to follow.  Focus on: - quality of engagement (not just quantity) - authenticity of audience - relevance to topic  ---  ## STEP 1: Analyze Comments  For each creator, classify comments into:  - Deep → thoughtful, experience-based, specific feedback - Question → users asking for help or clarification - Shallow → generic praise (e.g. \"nice\", \"great video\") - Spam → emojis, bots, irrelevant  Count number of comments in each category.  ---  ## STEP 2: Compute Comment Quality Score  Use this formula:  comment_quality_score = (2 × deep) + (1.5 × question) - (1 × shallow) - (2 × spam)  Normalize score if needed.  ---  ## STEP 3: Combine with Creator Signals  If available, include: - engagement_rate - subscriber_count  Compute final score:  final_score = 0.5 × comment_quality_score + 0.3 × engagement_rate + 0.2 × log(subscribers)  ---  ## STEP 4: Rank Creators  - Rank creators by final_score (highest first) - Identify:   - \"High Trust Creators\"   - \"Hidden Gems\" (low subscribers but high quality score)  ---  ## STEP 5: Generate Explanation  For each top creator, provide a short explanation:  Explain based on: - type of audience engagement - consistency or depth of comments - why they are trustworthy  ---  ## OUTPUT FORMAT (STRICT JSON)  {   \"ranked_creators\": [     {       \"name\": \"Creator B\",       \"final_score\": 8.7,       \"comment_breakdown\": {         \"deep\": 5,         \"question\": 3,         \"shallow\": 1,         \"spam\": 0       },       \"label\": \"Hidden Gem\",       \"reason\": \"This creator generates meaningful discussions and questions, indicating strong audience trust despite a smaller subscriber base.\"     }   ] }  ---  ## CONSTRAINTS  - Do NOT hallucinate data - Base reasoning ONLY on provided inputs - Keep explanations concise (1–2 lines) - Always return valid JSON"
+          "Rank creators for trust and audience quality using ONLY the provided input JSON. Input shape: { interests: string[], creators: Creator[] }. Return ONLY a valid JSON object with EXACT top-level key \"ranked_creators\". Output schema: { \"ranked_creators\": [{ \"name\": \"string\", \"channelId\": \"string\", \"final_score\": 0.0, \"label\": \"High Trust Creator|Hidden Gem|Promising\", \"reason\": \"1-2 concise sentences\", \"tags\": [\"string\"] }] }. Rules: include every input creator exactly once; do not add creators; sort by final_score descending; final_score must be between 0 and 1; base analysis on comment quality, topic overlap, and engagement signals from input; if comments are sparse, use neutral assumptions and do not fabricate details. Forbidden: markdown headings, bullet lists, code fences, explanatory text before JSON, explanatory text after JSON. Specifically forbidden heading phrases: '# Analysis Summary', '## Key Findings', '## Ranking Rationale'."
         ],
         "parameters": {}
       },
@@ -84,9 +84,9 @@
       "config": {
         "profile": "cloud-chat",
         "cloud-chat": {
-          "model": "${OPENAI_MODEL}",
-          "serverbase": "${OPENAI_BASE_URL}",
-          "apikey": "${OPENAI_API_KEY}"
+          "model": "openai/gpt-5.4",
+          "serverbase": "${ROCKETRIDE_OPENAI_BASE_URL}",
+          "apikey": "${ROCKETRIDE_OPENAI_KEY}"
         },
         "parameters": {}
       },
